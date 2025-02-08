@@ -1,0 +1,477 @@
+
+---
+title: "Análise Completa de Dados de Produção Automotiva"
+author: "Analista"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Carregamento das bibliotecas necessárias
+library(quantmod)
+library(ggplot2)
+library(dplyr)
+library(skimr)
+library(tidyr)
+library(corrplot)
+library(FactoMineR)
+library(factoextra)
+library(RColorBrewer)
+```
+
+# Carregamento e Exploração Inicial dos Dados
+
+## Carregamento dos Datasets
+```{r}
+# Carregamento dos dados
+df_falhas <- read.csv("InteliFalhas.csv", sep = ",", header = TRUE)
+df_results <- read.csv("InteliResultados.csv", sep = ",", header = TRUE)
+df_veiculo <- read.csv("InteliVeiculo.csv", sep = ",", header = TRUE)
+df_status <- read.csv("InteliStatus.csv", sep = ",", header = TRUE)
+
+# Verificação das dimensões
+dim(df_falhas)
+dim(df_status)
+dim(df_veiculo)
+dim(df_results)
+```
+
+## Visualização Inicial e Estrutura
+```{r}
+# Primeiras linhas de cada dataset
+list(
+  "Falhas" = head(df_falhas),
+  "Resultados" = head(df_results),
+  "Veículos" = head(df_veiculo),
+  "Status" = head(df_status)
+)
+
+# Estrutura detalhada
+glimpse(df_falhas)
+glimpse(df_status)
+glimpse(df_veiculo)
+glimpse(df_results)
+```
+
+# Análise Descritiva dos Dados
+
+## Resumo Estatístico
+```{r}
+# Resumos estatísticos
+summary(df_falhas)
+summary(df_veiculo)
+summary(df_results)
+summary(df_status)
+
+# Verificação de dados vazios
+colSums(is.na(df_falhas))
+colSums(is.na(df_results))
+colSums(is.na(df_status))
+colSums(is.na(df_veiculo))
+```
+
+## Análise de Valores Únicos
+```{r}
+# Análise de valores únicos por coluna
+df_veiculo %>% summarise(across(where(is.character), n_distinct))
+df_veiculo %>% count(MODELL, sort = TRUE)
+df_veiculo %>% count(FARBAU, sort = TRUE)
+df_veiculo %>% count(FARBIN, sort = TRUE)
+df_veiculo %>% count(ZIEL_LAND, sort = TRUE)
+df_veiculo %>% count(PR, sort = TRUE)
+```
+
+# Análise Univariada
+
+## Preparação dos Dados
+```{r}
+# Criação do dataset único por ID
+df_veiculo_unique <- df_veiculo %>%
+  group_by(ID) %>%
+  slice(1) %>%
+  ungroup()
+
+# Análise de falhas por veículo
+falhas_por_veiculo <- df_falhas %>%
+  group_by(ID) %>%
+  summarise(total_falhas = n()) %>%
+  ungroup()
+```
+
+## Distribuição de Falhas
+```{r}
+# Boxplot de falhas por veículo
+ggplot(falhas_por_veiculo, aes(y = total_falhas)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Distribuição de Falhas por Veículo",
+       y = "Número de Falhas") +
+  theme_minimal()
+
+# Histograma de falhas
+ggplot(falhas_por_veiculo, aes(x = total_falhas)) +
+  geom_histogram(fill = "steelblue", bins = 30) +
+  labs(title = "Histograma de Falhas por Veículo",
+       x = "Número de Falhas",
+       y = "Frequência") +
+  theme_minimal()
+```
+
+## Outliers em Falhas
+```{r}
+# Identificação de outliers
+outliers <- boxplot.stats(falhas_por_veiculo$total_falhas)$out
+veiculos_outliers <- falhas_por_veiculo %>%
+  filter(total_falhas %in% outliers) %>%
+  arrange(desc(total_falhas))
+
+print("Veículos com número atípico de falhas:")
+print(head(veiculos_outliers))
+```
+
+## Relação Falhas vs Modelo
+```{r}
+falhas_por_modelo_corrigido <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(MODELL) %>%
+  summarise(
+    total_veiculos = n_distinct(ID),
+    total_falhas = n(),
+    media_falhas_por_veiculo = total_falhas/total_veiculos,
+    tipos_falhas_distintos = n_distinct(TYPE_ID),
+    locais_falhas_distintos = n_distinct(LOC_ID)
+  ) %>%
+  arrange(desc(media_falhas_por_veiculo))
+
+ggplot(falhas_por_modelo_corrigido, 
+       aes(x = reorder(MODELL, media_falhas_por_veiculo), 
+           y = media_falhas_por_veiculo)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Média de Falhas por Modelo",
+       x = "Modelo",
+       y = "Média de Falhas")
+```
+
+## Análise de Correlação
+```{r}
+# Correlação entre variáveis numéricas
+dados_correlacao <- df_falhas %>%
+  left_join(df_results, by = "ID") %>%
+  group_by(ID) %>%
+  summarise(
+    total_falhas = n(),
+    total_resultados_nok = sum(STATUS == "NOK", na.rm = TRUE),
+    total_tipos_falha = n_distinct(TYPE_ID)
+  )
+
+matriz_correlacao <- cor(dados_correlacao[,-1], use = "complete.obs")
+corrplot(matriz_correlacao, method = "color", type = "upper",
+         addCoef.col = "black", tl.col = "black", tl.srt = 45)
+```
+
+
+```{R}
+
+## Análise de Correlação Expandida
+dados_correlacao_expandida <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(ID) %>%
+  summarise(
+    total_falhas = n(),
+    tipos_falhas_distintos = n_distinct(TYPE_ID),
+    locais_falhas_distintos = n_distinct(LOC_ID)
+  ) %>%
+  left_join(
+    df_results %>%
+      group_by(ID) %>%
+      summarise(
+        total_resultados = n(),
+        resultados_nok = sum(STATUS == "NOK", na.rm = TRUE)
+      ),
+    by = "ID"
+  ) %>%
+  left_join(
+    df_veiculo_unique %>%
+      select(ID, MODELL, FARBAU, FARBIN, ZIEL_LAND) %>%
+      mutate(
+        modelo_num = as.numeric(factor(MODELL)),
+        cor_externa_num = as.numeric(factor(FARBAU)),
+        cor_interna_num = as.numeric(factor(FARBIN)),
+        pais_num = as.numeric(factor(ZIEL_LAND))
+      ),
+    by = "ID"
+  )
+
+```
+
+```{R}
+
+variaveis_numericas <- dados_correlacao_expandida %>%
+  select(total_falhas, tipos_falhas_distintos, locais_falhas_distintos,
+         total_resultados, resultados_nok, modelo_num, 
+         cor_externa_num, cor_interna_num, pais_num)
+
+matriz_correlacao_expandida <- cor(variaveis_numericas, use = "complete.obs")
+
+# Visualização da matriz de correlação
+corrplot(matriz_correlacao_expandida,
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         title = "Matriz de Correlação Expandida")
+
+# Análise das correlações mais fortes
+correlacoes_ordenadas <- as.data.frame(as.table(matriz_correlacao_expandida)) %>%
+  filter(Var1 != Var2) %>%
+  arrange(desc(abs(Freq)))
+
+print("Top 10 correlações mais fortes:")
+head(correlacoes_ordenadas, 10)
+```
+
+
+# Análise Multivariada
+
+## Análise de Componentes Principais
+```{r}
+# Preparação para PCA
+dados_pca <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(ID) %>%
+  summarise(
+    total_falhas = n(),
+    tipos_distintos = n_distinct(TYPE_ID),
+    locais_distintos = n_distinct(LOC_ID)
+  ) %>%
+  na.omit()
+
+# PCA
+pca_result <- PCA(dados_pca[,-1], graph = FALSE)
+
+# Visualização
+fviz_pca_var(pca_result,
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+
+# Sumário da variância explicada
+print("Variância explicada por componente:")
+print(pca_result$eig)
+```
+
+# Análises Específicas Adicionais
+
+## Análise Temporal de Falhas
+
+### Também é possível analisar um modelo especifico só passando o parametro pro gráfico
+```{r}
+falhas_temporais <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  mutate(data = as.Date(substr(DATA.DETECCAO, 1, 10))) %>%
+  group_by(data, MODELL) %>%
+  summarise(
+    veiculos_afetados = n_distinct(ID),
+    total_falhas = n(),
+    media_falhas_por_veiculo = total_falhas/veiculos_afetados,
+    .groups = 'drop'
+  )
+
+ggplot(falhas_temporais %>% 
+         filter(data >= "2024-01-01"), 
+       aes(x = data, y = media_falhas_por_veiculo, color = MODELL)) +
+  geom_line(size = 1.2) +
+  theme_minimal() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b/%Y") +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Evolução Temporal das Falhas",
+    x = "Data",
+    y = "Média de Falhas por Veículo"
+  )
+```
+
+## Análise por País de Destino
+```{r}
+falhas_por_pais <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(ZIEL_LAND, TYPE_TEXT) %>%
+  summarise(
+    veiculos_afetados = n_distinct(ID),
+    total_falhas = n(),
+    media_falhas_por_veiculo = total_falhas/veiculos_afetados,
+    .groups = 'drop'
+  ) %>%
+  arrange(ZIEL_LAND, desc(media_falhas_por_veiculo))
+
+print("Top 5 tipos de falhas por país:")
+falhas_por_pais %>%
+  group_by(ZIEL_LAND) %>%
+  slice_max(order_by = total_falhas, n = 5)
+```
+
+## Análise de Cores Externas
+```{r}
+# Distribuição das Cores Externas
+ggplot(df_veiculo, aes(x = FARBAU)) +
+  geom_bar(fill = "darkgreen") +
+  theme_minimal() +
+  labs(title = "Distribuição das Cores Externas",
+       x = "Cor Externa",
+       y = "Contagem") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Análise de falhas por modelo e cor externa
+falhas_por_modelo_cor <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(MODELL, FARBAU) %>%
+  summarise(falhas_por_modelo = n(), .groups = 'drop') %>%
+  arrange(desc(falhas_por_modelo))
+
+# Gráfico de Falhas por Modelo e Cor Externa
+ggplot(falhas_por_modelo_cor, 
+       aes(x = FARBAU, y = falhas_por_modelo, fill = FARBAU)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(size = 16, hjust = 0.5),
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  geom_text(aes(label = falhas_por_modelo), 
+            position = position_dodge(width = 0.75), 
+            vjust = -0.5,
+            size = 3) +
+  labs(title = "Falhas por Modelo e Cor Externa",
+       x = "Cor Externa",
+       y = "Número de Falhas") +
+  facet_wrap(~ MODELL, scales = "free_y", ncol = 2)
+
+# Análise estatística por cor
+estatisticas_cor <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(FARBAU) %>%
+  summarise(
+    total_veiculos = n_distinct(ID),
+    total_falhas = n(),
+    media_falhas = total_falhas/total_veiculos,
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(media_falhas))
+
+print("Estatísticas de falhas por cor externa:")
+print(estatisticas_cor)
+```
+
+```{R}
+
+## Análise de Configurações (PR)
+```{r}
+# Análise de falhas por componente PR
+falhas_config <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  mutate(
+    pr_components = strsplit(PR, " ")
+  ) %>%
+  unnest(pr_components) %>%
+  group_by(pr_components) %>%
+  summarise(
+    veiculos_afetados = n_distinct(ID),
+    total_falhas = n(),
+    media_falhas_por_veiculo = total_falhas/veiculos_afetados,
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(media_falhas_por_veiculo))
+
+# Visualização das top configurações problemáticas
+ggplot(head(falhas_config, 15), 
+       aes(x = reorder(pr_components, media_falhas_por_veiculo), 
+           y = media_falhas_por_veiculo)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 15 Configurações com Maior Média de Falhas",
+       x = "Componente PR",
+       y = "Média de Falhas por Veículo")
+
+# Análise detalhada de tipos de falha por PR
+pr_tipo_falha <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  mutate(
+    pr_components = strsplit(PR, " ")
+  ) %>%
+  unnest(pr_components) %>%
+  group_by(pr_components, TYPE_TEXT) %>%
+  summarise(
+    total_ocorrencias = n(),
+    veiculos_distintos = n_distinct(ID),
+    .groups = 'drop'
+  ) %>%
+  arrange(pr_components, desc(total_ocorrencias))
+
+print("Top 15 combinações PR-Tipo de Falha mais frequentes:")
+print(head(pr_tipo_falha, 15))
+```
+
+```
+
+
+## Análise de Correlação Expandida
+```{r}
+# Preparação dos dados para correlação expandida
+dados_correlacao_expandida <- df_falhas %>%
+  left_join(df_veiculo_unique, by = "ID") %>%
+  group_by(ID) %>%
+  summarise(
+    total_falhas = n(),
+    tipos_falhas_distintos = n_distinct(TYPE_ID),
+    locais_falhas_distintos = n_distinct(LOC_ID)
+  ) %>%
+  left_join(
+    df_results %>%
+      group_by(ID) %>%
+      summarise(
+        total_resultados = n(),
+        resultados_nok = sum(STATUS == "NOK", na.rm = TRUE)
+      ),
+    by = "ID"
+  ) %>%
+  left_join(
+    df_veiculo_unique %>%
+      select(ID, MODELL, FARBAU, FARBIN, ZIEL_LAND) %>%
+      mutate(
+        modelo_num = as.numeric(factor(MODELL)),
+        cor_externa_num = as.numeric(factor(FARBAU)),
+        cor_interna_num = as.numeric(factor(FARBIN)),
+        pais_num = as.numeric(factor(ZIEL_LAND))
+      ),
+    by = "ID"
+  )
+
+```
+
+
+# Conclusões 
+
+Considerando que o foco dessa análise foi no df_veiculo, que possui informações dos veiculos foi possível identificar tendências específicas para diferentes modelos, bem como uma correlação significativa entre os tipos de falhas detectados. Além disso por meio dO gráfico de falhas temporais, observou-se que a incidência de falhas varia ao longo do tempo, indicando possíveis influências de fatores sazonais ou operacionais. Também pudemos perceber que alguns modelos costumam dar mais problemas como é o caso do R11SQ4.
+
+
+# Considerações Finais e possíveis melhorias 
+Apesar dos avanços proporcionados por este estudo, algumas limitações devem ser reconhecidas. A subnotificação de falhas em determinados períodos ou turnos de produção pode comprometer a precisão das análises, tornando essencial a implementação de um sistema mais robusto de coleta de dados. Além disso, a ausência de informações detalhadas sobre as condições de produção no momento das falhas dificulta a identificação das causas raiz com maior precisão.  Para aprimorar o monitoramento da qualidade e antecipar problemas, seria recomendado o desenvolvimento de um sistema de coleta de dados mais granular, incluindo variáveis ambientais e informações detalhadas sobre o processo produtivo.
